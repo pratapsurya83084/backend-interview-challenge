@@ -15,10 +15,13 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+
+
 // Initialize database
 const db = new Database(process.env.DATABASE_URL || './data/tasks.sqlite3');
 
 // Routes
+// app.use('/api/tasks', createTaskRouter(db));
 app.use('/api/tasks', createTaskRouter(db));
 app.use('/api', createSyncRouter(db));
 
