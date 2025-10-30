@@ -1,90 +1,3 @@
-// import sqlite3 from 'sqlite3';
-// import { promisify } from 'util';
-// import { Task, SyncQueueItem } from '../types';
-
-// const sqlite = sqlite3.verbose();
-
-// export class Database {
-//   private db: sqlite3.Database;
-
-//   constructor(filename: string = ':memory:') {
-//     this.db = new sqlite.Database(filename);
-//   }
-
-//   async initialize(): Promise<void> {
-//     await this.createTables();
-//   }
-
-//   private async createTables(): Promise<void> {
-//     const createTasksTable = `
-//       CREATE TABLE IF NOT EXISTS tasks (
-//         id TEXT PRIMARY KEY,
-//         title TEXT NOT NULL,
-//         description TEXT,
-//         completed INTEGER DEFAULT 0,
-//         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-//         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-//         is_deleted INTEGER DEFAULT 0,
-//         sync_status TEXT DEFAULT 'pending',
-//         server_id TEXT,
-//         last_synced_at DATETIME
-//       )
-//     `;
-
-//     const createSyncQueueTable = `
-//       CREATE TABLE IF NOT EXISTS sync_queue (
-//         id TEXT PRIMARY KEY,
-//         task_id TEXT NOT NULL,
-//         operation TEXT NOT NULL,
-//         data TEXT NOT NULL,
-//         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-//         retry_count INTEGER DEFAULT 0,
-//         error_message TEXT,
-//         FOREIGN KEY (task_id) REFERENCES tasks(id)
-//       )
-//     `;
-
-//     await this.run(createTasksTable);
-//     await this.run(createSyncQueueTable);
-//   }
-
-//   // Helper methods
-//   run(sql: string, params: any[] = [], p0: (err: Error | null) => void): Promise<void> {
-//     return new Promise((resolve, reject) => {
-//       this.db.run(sql, params, (err) => {
-//         if (err) reject(err);
-//         else resolve();
-//       });
-//     });
-//   }
-
-//   get(sql: string, params: any[] = []): Promise<any> {
-//     return new Promise((resolve, reject) => {
-//       this.db.get(sql, params, (err, row) => {
-//         if (err) reject(err);
-//         else resolve(row);
-//       });
-//     });
-//   }
-
-//   all(sql: string, params: any[] = []): Promise<any[]> {
-//     return new Promise((resolve, reject) => {
-//       this.db.all(sql, params, (err, rows) => {
-//         if (err) reject(err);
-//         else resolve(rows);
-//       });
-//     });
-//   }
-
-//   close(): Promise<void> {
-//     return new Promise((resolve, reject) => {
-//       this.db.close((err) => {
-//         if (err) reject(err);
-//         else resolve();
-//       });
-//     });
-//   }
-// }
 
 
 
@@ -310,19 +223,28 @@ export class Database {
 
   private db: sqlite3.Database;
 
-  constructor(filename: string = path.join(__dirname, '../data/tasks.sqlite3')) {
+ constructor(filename: string = path.join(__dirname, '../data/tasks.sqlite3')) {
+    // DEBUG: print the DB path so you know which file the app opens
+    console.log('Opening SQLite DB at:', filename);
     this.db = new sqlite.Database(filename);
   }
 
+  /**
+   * Initialize DB (create tables + run lightweight migrations)
+   */
   async initialize(): Promise<void> {
     await this.createTables();
+    // Ensure older DB files get the new `status` column in sync_queue
+    await this.ensureSyncQueueStatusColumn();
   }
 
   private async createTables(): Promise<void> {
+    
     const createTasksTable = `
+
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
+        title TEXT ,
         description TEXT,
         completed INTEGER DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -339,6 +261,7 @@ export class Database {
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
         operation TEXT NOT NULL,
+        status TEXT DEFAULT 'pending',
         data TEXT NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         retry_count INTEGER DEFAULT 0,
@@ -350,6 +273,39 @@ export class Database {
     await this.run(createTasksTable);
     await this.run(createSyncQueueTable);
   }
+
+  /**
+   * Lightweight idempotent migration to ensure sync_queue has `status` column.
+   * Safe to call on every startup.
+   */
+  async ensureSyncQueueStatusColumn(): Promise<void> {
+    try {
+      // If the sync_queue table does not exist yet, PRAGMA returns empty array.
+      const info = await this.all<{ name: string }>("PRAGMA table_info('sync_queue')");
+      const hasStatus = info.some((c) => c.name === 'status');
+      if (!hasStatus) {
+        console.log("Migration: 'status' column missing — adding it now to sync_queue");
+        await this.run("ALTER TABLE sync_queue ADD COLUMN status TEXT DEFAULT 'pending'");
+        console.log("Migration: added 'status' column to sync_queue");
+      } else {
+        console.log("Migration: 'status' column already exists on sync_queue");
+      }
+    } catch (err) {
+      // Log but don't crash the whole app during startup. If there's a real problem,
+      // you'll still see the error in logs. Re-throw if you want startup to fail fast.
+      console.error('ensureSyncQueueStatusColumn error (non-fatal):', err);
+    }
+  }
+  
+
+
+
+
+
+
+
+
+
 
   /**
    * Run an SQL statement. Resolves with info { lastID, changes }.

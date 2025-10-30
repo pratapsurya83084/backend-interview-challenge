@@ -13,83 +13,187 @@ export class TaskService {
   // 5. Add to sync queue
 
   //done
-  async createTask(taskData: Partial<Task>): Promise<Task> {
-    try {
-      // 1. Generate UUID for the task
-      const id = uuidv4();
-      const now = new Date();
+  // async createTask(taskData: Partial<Task>): Promise<Task> {
+  //   try {
+  //     // 1. Generate UUID for the task
+  //     const id = uuidv4();
+  //     const now = new Date();
 
-      const task: Task = {
-        id,
-        title: taskData.title ?? '',
-        description: taskData.description ?? '',
-        completed: false,
-        created_at: now,
-        updated_at: now,
-        is_deleted: false,
-        sync_status: 'pending',
-        server_id: null as any,
-        last_synced_at: now,
-      };
+  //     const task: Task = {
+  //       id,
+  //       title: taskData.title ?? '',
+  //       description: taskData.description ?? '',
+  //       completed: false,
+  //       created_at: now,
+  //       updated_at: now,
+  //       is_deleted: false,
+  //       sync_status: 'pending',
+  //       server_id: null as any,
+  //       last_synced_at: now,
+  //     };
 
-      // console.log("iinserting task into DB:", task);
+  //     console.log("iinserting task into DB:", task);
 
-      const insertSql = `
+  //     const insertSql = `
+  //     INSERT INTO tasks (
+  //       id, title, description, completed, created_at, updated_at,
+  //       is_deleted, sync_status, server_id, last_synced_at
+  //     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  //   `;
+
+  //     await new Promise<void>((resolve, reject) => {
+  //       this.db.run(
+  //         insertSql,
+  //         [
+  //           task.id,
+  //           task.title,
+  //           task.description,
+  //           task.completed ? 1 : 0,
+  //           task.created_at.toISOString(),
+  //           task.updated_at.toISOString(),
+  //           task.is_deleted ? 1 : 0,
+  //           task.sync_status,
+  //           task.server_id ?? null,
+  //           task.last_synced_at ? task.last_synced_at.toISOString() : null,
+  //         ],
+  //         (err: Error | null) => {
+  //           if (err) {
+  //             console.error('❌ DB insert failed:', err);
+  //             reject(err);
+  //           } else {
+  //             console.log('✅ DB insert success:', task.id);
+  //             resolve();
+  //           }
+  //         },
+  //       );
+  //     });
+
+  //     // // Add to sync queue
+  //     const syncSql = `
+  //     INSERT INTO sync_queue (task_id, status, created_at)
+  //     VALUES (?, ?, ?)
+  //   `;
+  //     await new Promise<void>((resolve, reject) => {
+  //       this.db.run(
+  //         syncSql,
+  //         [task.id, 'pending', now.toISOString()],
+  //         (err: Error | null) => {
+  //           if (err) reject(err);
+  //           else resolve();
+  //         },
+  //       );
+  //     });
+
+  //     return task;
+
+  //   } catch (err) {
+  //     console.error('🔥 Error in createTask:', err);
+  //     throw err;
+  //   }
+  // }
+
+
+// Replace your existing createTask with this
+async createTask(taskData: Partial<Task>): Promise<Task> {
+  try {
+    // 1. Generate UUID for the task
+    const id = uuidv4();
+    const now = new Date();
+
+    const task: Task = {
+      id,
+      title: taskData.title ?? '',
+      description: taskData.description ?? '',
+      completed: false,
+      created_at: now,
+      updated_at: now,
+      is_deleted: false,
+      sync_status: 'pending',
+      server_id: null as any,
+      last_synced_at: now,
+    };
+
+    console.log('iinserting task into DB:', task);
+
+    const insertSql = `
       INSERT INTO tasks (
         id, title, description, completed, created_at, updated_at,
         is_deleted, sync_status, server_id, last_synced_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
-      await new Promise<void>((resolve, reject) => {
-        this.db.run(
-          insertSql,
-          [
-            task.id,
-            task.title,
-            task.description,
-            task.completed ? 1 : 0,
-            task.created_at.toISOString(),
-            task.updated_at.toISOString(),
-            task.is_deleted ? 1 : 0,
-            task.sync_status,
-            task.server_id ?? null,
-            task.last_synced_at ? task.last_synced_at.toISOString() : null,
-          ],
-          (err: Error | null) => {
-            if (err) {
-              console.error('❌ DB insert failed:', err);
-              reject(err);
-            } else {
-              console.log('✅ DB insert success:', task.id);
-              resolve();
-            }
-          },
-        );
-      });
+    await new Promise<void>((resolve, reject) => {
+      this.db.run(
+        insertSql,
+        [
+          task.id,
+          task.title,
+          task.description,
+          task.completed ? 1 : 0,
+          task.created_at.toISOString(),
+          task.updated_at.toISOString(),
+          task.is_deleted ? 1 : 0,
+          task.sync_status,
+          task.server_id ?? null,
+          task.last_synced_at ? task.last_synced_at.toISOString() : null,
+        ],
+        (err: Error | null) => {
+          if (err) {
+            console.error('❌ DB insert failed:', err);
+            return reject(err);
+          }
+          console.log('✅ DB insert success:', task.id);
+          resolve();
+        },
+      );
+    });
 
-      // // Add to sync queue
-      const syncSql = `
-      INSERT INTO sync_queue (task_id, status, created_at)
-      VALUES (?, ?, ?)
+    // Enqueue sync job — provide all required columns (id, task_id, operation, data, status, created_at, retry_count, error_message)
+    const syncQueueId = uuidv4();
+    const syncSql = `
+      INSERT INTO sync_queue (
+        id, task_id, operation, data, status, created_at, retry_count, error_message
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `;
+
+    try {
       await new Promise<void>((resolve, reject) => {
         this.db.run(
           syncSql,
-          [task.id, 'pending', now.toISOString()],
+          [
+            syncQueueId,
+            task.id,
+            'create',               // operation (NOT NULL)
+            JSON.stringify({}),     // data (NOT NULL)
+            'pending',              // status
+            now.toISOString(),      // created_at
+            0,                      // retry_count
+            null                    // error_message
+          ],
           (err: Error | null) => {
-            if (err) reject(err);
-            else resolve();
+            if (err) {
+              console.warn('⚠️ Warning: sync_queue insert failed:', err);
+              return reject(err);
+            }
+            console.log('✅ Enqueued sync job:', syncQueueId);
+            resolve();
           },
         );
       });
-
-      return task;
     } catch (err) {
-      console.error('🔥 Error in createTask:', err);
-      throw err;
+      // IMPORTANT: don't rethrow — task creation succeeded; enqueue failed due to schema or other issue.
+      console.error('⚠️ Sync queue enqueue failed (continuing):', err);
+      // Optionally persist the failure to a fallback table or monitoring system here.
     }
+
+    return task;
+  } catch (err) {
+    console.error('🔥 Error in createTask:', err);
+    throw err;
   }
+}
+
+
   //done
   async updateTask(id: string, updates: Partial<Task>): Promise<Task | null> {
     // TODO: Implement task update

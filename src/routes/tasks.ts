@@ -7,30 +7,6 @@ export function createTaskRouter(db: Database): Router {
   const router = Router();
   const taskService = new TaskService(db);
   const syncService = new SyncService(db, taskService);
-
-  // Get all tasks
-  router.get('/getall-task', async (req: Request, res: Response) => {
-    try {
-      const tasks = await taskService.getAllTasks();
-      res.json(tasks);
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to fetch tasks' });
-    }
-  });
-
-  // Get single task
-  router.get('/:id', async (req: Request, res: Response) => {
-    try {
-      const task = await taskService.getTask(req.params.id);
-      if (!task) {
-        return res.status(404).json({ error: 'Task not found' });
-      }
-      res.json(task);
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to fetch task' });
-    }
-  });
-
   // Create task
   router.post('/create-task', async (req: Request, res: Response) => {
     console.log('POST /api/tasks/create-task hit', req.body);
@@ -61,6 +37,30 @@ export function createTaskRouter(db: Database): Router {
       return res.status(500).json({ error: 'Failed to create task' });
     }
   });
+
+  // Get all tasks
+  router.get('/getall-task', async (req: Request, res: Response) => {
+    try {
+      const tasks = await taskService.getAllTasks();
+      res.json(tasks);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch tasks' });
+    }
+  });
+
+  // Get single task
+  router.get('/:id', async (req: Request, res: Response) => {
+    try {
+      const task = await taskService.getTask(req.params.id);
+      if (!task) {
+        return res.status(404).json({ error: 'Task not found' });
+      }
+      res.json(task);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch task' });
+    }
+  });
+
 
   // Update task
 router.put('/update/:id', async (req: Request, res: Response) => {
