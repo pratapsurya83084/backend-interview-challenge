@@ -1,296 +1,196 @@
-// import { Router, Request, Response } from 'express';
-// import { SyncService } from '../services/syncService';
-// import { TaskService } from '../services/taskService';
-// import { Database } from '../db/database';
-
-// export function createSyncRouter(db: Database): Router {
-//   const router = Router();
-//   const taskService = new TaskService(db);
-//   const syncService = new SyncService(db, taskService);
-
-//   // Trigger manual sync
-//   router.post('/sync', async (req: Request, res: Response) => {
-//     // TODO: Implement sync endpoint
-//     // 1. Check connectivity first
-//     // 2. Call syncService.sync()
-//     // 3. Return sync result
-//     res.status(501).json({ error: 'Not implemented' });
-//   });
-
-//   // Check sync status
-//   router.get('/status', async (req: Request, res: Response) => {
-//     // TODO: Implement sync status endpoint
-//     // 1. Get pending sync count
-//     // 2. Get last sync timestamp
-//     // 3. Check connectivity
-//     // 4. Return status summary
-//     res.status(501).json({ error: 'Not implemented' });
-//   });
-
-//   // Batch sync endpoint (for server-side)
-//   router.post('/batch', async (req: Request, res: Response) => {
-//     // TODO: Implement batch sync endpoint
-//     // This would be implemented on the server side
-//     // to handle batch sync requests from clients
-//     res.status(501).json({ error: 'Not implemented' });
-//   });
-
-//   // Health check endpoint
-//   router.get('/health', async (req: Request, res: Response) => {
-//     res.json({ status: 'ok', timestamp: new Date() });
-//   });
-
-//   return router;
-// }
 
 
 
+// src/routes/sync.ts
 import { Router, Request, Response } from 'express';
-import { SyncService } from '../services/syncService';
-import { TaskService } from '../services/taskService';
 import { Database } from '../db/database';
-import { SyncQueueItem, BatchSyncResponse } from '../types';
+import { TaskService } from '../services/taskService';
+import { SyncService } from '../services/syncService';
+import { BatchSyncRequest, SyncQueueItem, Task } from '../types';
 
-/**
- * Sync router:
- *  - POST /sync   -> client triggers a sync (push local queue -> remote server)
- *  - GET  /status -> info about pending syncs, last sync time, connectivity
- *  - POST /batch  -> server endpoint to accept client batch requests
- *  - GET  /health -> simple health check
- *
- * The /batch response shape matches the BatchSyncResponse expected by SyncService:
- *   { processed_items: [ { client_id, server_id, status, resolved_data?, error? } ] }
- */
 export function createSyncRouter(db: Database): Router {
   const router = Router();
   const taskService = new TaskService(db);
   const syncService = new SyncService(db, taskService);
 
-  // POST /sync -> trigger SyncService.sync() router.post('/sync', 
-  async (req: Request, res: Response) => {
+  // Trigger manual sync
+  router.post('/sync', async (req: Request, res: Response) => {
     try {
-      // 1. Check remote connectivity
-      const reachable = await syncService.checkConnectivity();
-      if (!reachable) {
-        return res.status(503).json({
-          success: false,
-          message: 'Remote server unreachable. Try again later.',
-        });
+      const online = await syncService.checkConnectivity();
+      if (!online) {
+        return res.status(503).json({ error: 'Server unreachable' });
       }
-
-      // 2. Run sync orchestration
-      const syncResult = await syncService.sync();
-
-      // 3. Return result (SyncResult shape)
-      return res.json(syncResult);
+      const result = await syncService.sync();
+      return res.status(200).json(result);
     } catch (err: any) {
-      console.error('POST /sync error:', err);
-      return res.status(500).json({
-        success: false,
-        message: err?.message || 'Internal server error during sync',
-      });
-    }
-  }
-
-  async function dbGetAsync(sql: string, params: any[] = []): Promise<any> {
-    if (typeof (db as any).get === 'function') {
-      try {
-        const maybePromise = (db as any).get(sql, params);
-        if (maybePromise && typeof maybePromise.then === 'function') {
-          return await maybePromise;
-        }
-      } catch {
-        // fallthrough to callback-style below
-      }
-
-      return new Promise<any>((resolve, reject) => {
-        try {
-          (db as any).get(sql, params, (err: Error | null, row: any) => {
-            if (err) return reject(err);
-            resolve(row);
-          });
-        } catch (e) {
-          reject(e);
-        }
-      });
-    }
-    throw new Error('db.get is not available');
-  }
-
-  // GET /status -> summary: pending count, last sync timestamp, connectivity
-  router.get('/status', async (_req: Request, res: Response) => {
-    try {
-      // 1) pending sync count (exclude permanently failed queue entries with operation = 'failed')
-      const pendingRow: any = await dbGetAsync(
-        `SELECT COUNT(*) as cnt FROM sync_queue WHERE operation != 'failed'`
-      );
-      const pendingCount = pendingRow ? Number(pendingRow.cnt) : 0;
-
-      // 2) total sync_queue size
-      const totalRow: any = await dbGetAsync(`SELECT COUNT(*) as cnt FROM sync_queue`);
-      const totalCount = totalRow ? Number(totalRow.cnt) : 0;
-
-      // 3) last sync timestamp (latest last_synced_at from tasks)
-      const lastSyncRow: any = await dbGetAsync(`SELECT MAX(last_synced_at) as last_sync FROM tasks`);
-      let lastSync: string | null = null;
-      if (lastSyncRow && lastSyncRow.last_sync) {
-        const raw = lastSyncRow.last_sync;
-        const d = new Date(raw);
-        lastSync = !isNaN(d.getTime()) ? d.toISOString() : String(raw);
-      }
-
-      // 4) connectivity
-      const isOnline = Boolean(await syncService.checkConnectivity());
-
-      // Return the exact shape you requested
-      return res.json({
-        pending_sync_count: pendingCount,
-        last_sync_timestamp: lastSync,
-        is_online: isOnline,
-        sync_queue_size: totalCount,
-      });
-    } catch (err: any) {
-      console.error('GET /status error:', err);
-      return res.status(500).json({ success: false, error: err?.message || 'Internal error' });
+      console.error('[sync trigger] error', err);
+      return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  /**
-   * POST /batch
-   * Accepts a client BatchSyncRequest and applies the items using TaskService.
-   * Response shape:
-   * {
-   *   processed_items: [
-   *     { client_id, server_id, status: 'success'|'conflict'|'error', resolved_data?, error? }
-   *   ]
-   * }
-   */
-router.post('/batch', async (req: Request, res: Response) => {
+  
+
+  // GET /status  - done
+router.get('/status', async (req: Request, res: Response) => {
   try {
-    const body = req.body as { items?: any[]; client_timestamp?: string } | undefined;
-    if (!body || !Array.isArray(body.items)) {
-      return res.status(400).json({ error: 'Invalid payload: items array required' });
-    }
+    // pending count (number of queue rows)
+    const pending = await db.countPendingSyncQueueItems();
 
-    const items = body.items;
-    const processed_items: BatchSyncResponse['processed_items'] = [];
+    // last synced timestamp (Date | null) -> convert to ISO string or null
+    const lastSyncedDate = await db.getLastSyncedAt();
+    const last_sync_timestamp = lastSyncedDate ? lastSyncedDate.toISOString() : null;
 
-    // Helper to safely parse JSON
-    const safeParse = (value: any) => {
-      if (typeof value !== 'string') return { ok: true, data: value };
-      try {
-        return { ok: true, data: JSON.parse(value) };
-      } catch (e: any) {
-        return { ok: false, error: e.message };
-      }
-    };
+    // connectivity check
+    const is_online = await syncService.checkConnectivity();
 
-    // Normalize task object returned from TaskService to ensure ISO timestamps and ids
-    const normalizeTask = (t: any) => {
-      if (!t || typeof t !== 'object') return t;
-      const out: any = { ...t };
+    // size of sync queue — same as pending for now, but kept explicit
+    const sync_queue_size = pending;
 
-      // server id preference: server_id then id
-      out.id = out.id ?? out.server_id ?? out._id ?? out.task_id ?? out.id;
-      // Ensure server_id is present separately if available
-      out.server_id = out.server_id ?? out.id ?? undefined;
-
-      // Normalize timestamps to ISO strings if possible
-      for (const tsKey of ['created_at', 'createdAt', 'updated_at', 'updatedAt', 'last_synced_at']) {
-        if (out[tsKey]) {
-          const d = new Date(out[tsKey]);
-          if (!isNaN(d.getTime())) out[tsKey] = d.toISOString();
-          else out[tsKey] = String(out[tsKey]);
-        }
-      }
-      // also standardize keys to created_at and updated_at if camelCase provided
-      if (out.createdAt && !out.created_at) out.created_at = out.createdAt;
-      if (out.updatedAt && !out.updated_at) out.updated_at = out.updatedAt;
-
-      return out;
-    };
-
-    for (const it of items) {
-      const clientId: string = it.id ?? it.client_id ?? '';
-      const taskId: string = it.task_id ?? '';
-      const operation: string = it.operation ?? '';
-
-      const parsed = safeParse(it.data);
-      if (!parsed.ok) {
-        processed_items.push({
-          client_id: clientId,
-          server_id: '',
-          status: 'error',
-          error: `Invalid JSON in data: ${parsed.error}`,
-        });
-        continue;
-      }
-
-      const data = parsed.data;
-
-      try {
-        if (operation === 'create') {
-          // Ensure we pass id if provided by client
-          const payload = { ...(data || {}), id: data?.id || taskId || undefined };
-          const created = await taskService.createTask(payload);
-
-          const normalized = normalizeTask(created);
-          const serverId = String(normalized?.server_id ?? normalized?.id ?? '');
-
-          processed_items.push({
-            client_id: clientId,
-            server_id: serverId,
-            status: 'success',
-            resolved_data: normalized || undefined,
-          });
-        } else if (operation === 'update') {
-          const updated = await taskService.updateTask(taskId, data || {});
-          const normalized = normalizeTask(updated);
-          const serverId = String(normalized?.server_id ?? normalized?.id ?? '');
-
-          processed_items.push({
-            client_id: clientId,
-            server_id: serverId,
-            status: 'success',
-            resolved_data: normalized || undefined,
-          });
-        } else if (operation === 'delete') {
-          await taskService.deleteTask(taskId);
-          processed_items.push({
-            client_id: clientId,
-            server_id: String(taskId || ''),
-            status: 'success',
-          });
-        } else {
-          processed_items.push({
-            client_id: clientId,
-            server_id: '',
-            status: 'error',
-            error: `Unknown operation: ${operation}`,
-          });
-        }
-      } catch (itemErr: any) {
-        console.error('Batch item failed:', itemErr);
-        processed_items.push({
-          client_id: clientId,
-          server_id: '',
-          status: 'error',
-          error: itemErr?.message || String(itemErr),
-        });
-      }
-    }
-
-    return res.json({ processed_items });
+    return res.status(200).json({
+      pending_sync_count: pending,
+      last_sync_timestamp,
+      is_online,
+      sync_queue_size,
+    });
   } catch (err: any) {
-    console.error('POST /batch error:', err);
-    return res.status(500).json({ error: err?.message || 'Internal server error' });
+    console.error('[sync status] error', err);
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : String(err),
+      timestamp: new Date().toISOString(),
+      path: req.path,
+    });
   }
 });
 
 
-  // Health check used by SyncService.checkConnectivity()
+  // Batch sync endpoint (SERVER SIDE) - done
+  router.post('/batch', async (req: Request, res: Response) => {
+    try {
+      const body = req.body as Partial<BatchSyncRequest>;
+      if (!body || !Array.isArray(body.items)) {
+        return res.status(400).json({ error: 'Invalid payload' });
+      }
+
+      const items = body.items as SyncQueueItem[];
+
+      const response = {
+        results: { received: items.length },
+        processed_items: [] as {
+          client_id: string;
+          server_id: string;
+          status: 'success' | 'conflict' | 'error';
+          resolved_data?: Task;
+          error?: string;
+        }[],
+      };
+
+      for (const it of items) {
+        try {
+          if (!it || !it.task_id || !it.operation) {
+            response.processed_items.push({ client_id: it?.id ?? 'unknown', server_id: '', status: 'error', error: 'Invalid item' });
+            continue;
+          }
+
+          const serverTask = await db.getTaskById(it.task_id);
+
+          if (it.operation === 'create') {
+            if (serverTask) {
+              // conflict: server already has it
+              response.processed_items.push({ client_id: it.id, server_id: serverTask.server_id ?? serverTask.id, status: 'conflict', resolved_data: serverTask });
+              continue;
+            }
+
+            const now = new Date();
+            const t: Task = {
+              id: it.task_id,
+              title: (it.data as any)?.title ?? 'Untitled',
+              description: (it.data as any)?.description,
+              completed: (it.data as any)?.completed ?? false,
+              created_at: it.data?.created_at ? new Date(it.data.created_at as any) : now,
+              updated_at: it.data?.updated_at ? new Date(it.data.updated_at as any) : now,
+              is_deleted: (it.data as any)?.is_deleted ?? false,
+              sync_status: 'synced',
+              server_id: it.task_id,
+              last_synced_at: new Date(),
+            };
+            await db.insertTask(t);
+            response.processed_items.push({ client_id: it.id, server_id: t.server_id ?? t.id, status: 'success', resolved_data: t });
+          } else if (it.operation === 'update') {
+            if (!serverTask) {
+              // no server record -> create
+              const now = new Date();
+              const t: Task = {
+                id: it.task_id,
+                title: (it.data as any)?.title ?? 'Untitled',
+                description: (it.data as any)?.description,
+                completed: (it.data as any)?.completed ?? false,
+                created_at: it.data?.created_at ? new Date(it.data.created_at as any) : now,
+                updated_at: it.data?.updated_at ? new Date(it.data.updated_at as any) : now,
+                is_deleted: (it.data as any)?.is_deleted ?? false,
+                sync_status: 'synced',
+                server_id: it.task_id,
+                last_synced_at: new Date(),
+              };
+              await db.insertTask(t);
+              response.processed_items.push({ client_id: it.id, server_id: t.server_id ?? t.id, status: 'success', resolved_data: t });
+              continue;
+            }
+
+            const clientUpdated = it.data?.updated_at ? new Date(it.data.updated_at as any) : null;
+            const serverUpdated = serverTask.updated_at ? new Date(serverTask.updated_at) : null;
+
+            if (clientUpdated && serverUpdated && serverUpdated > clientUpdated) {
+              // server newer -> conflict
+              response.processed_items.push({ client_id: it.id, server_id: serverTask.server_id ?? serverTask.id, status: 'conflict', resolved_data: serverTask });
+              continue;
+            }
+
+            const updates: Partial<Task> = {
+              title: (it.data as any)?.title ?? serverTask.title,
+              description: (it.data as any)?.description ?? serverTask.description,
+              completed: (it.data as any)?.completed ?? serverTask.completed,
+              updated_at: it.data?.updated_at ? new Date(it.data.updated_at as any) : new Date(),
+              is_deleted: (it.data as any)?.is_deleted ?? serverTask.is_deleted,
+              sync_status: 'synced',
+              last_synced_at: new Date(),
+            };
+
+            await db.updateTask(it.task_id, updates as any);
+            const merged = await db.getTaskById(it?.task_id);
+            // response.processed_items.push({ client_id: it.id, server_id: merged?.server_id ?? merged?.id , status: 'success', resolved_data: merged });
+         response.processed_items.push({
+    client_id: it.id,
+    server_id: '',
+    status: 'success',
+  });
+        
+          } else if (it.operation === 'delete') {
+            if (!serverTask) {
+              response.processed_items.push({ client_id: it.id, server_id: '', status: 'success' });
+              continue;
+            }
+            // perform soft delete
+            await db.updateTask(it.task_id, { ...serverTask, is_deleted: true, updated_at: new Date(), sync_status: 'synced', last_synced_at: new Date() } as any);
+            response.processed_items.push({ client_id: it.id, server_id: serverTask.server_id ?? serverTask.id, status: 'success' });
+          } else {
+            response.processed_items.push({ client_id: it.id, server_id: '', status: 'error', error: `Unsupported operation ${it.operation}` });
+          }
+        } catch (itemErr: any) {
+          console.error('[sync batch item] error', itemErr);
+          response.processed_items.push({ client_id: it.id, server_id: '', status: 'error', error: itemErr instanceof Error ? itemErr.message : String(itemErr) });
+        }
+      }
+
+      return res.status(200).json(response);
+    } catch (err: any) {
+      console.error('[sync batch] error', err);
+      return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // health -  done 
   router.get('/health', async (_req: Request, res: Response) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    return res.json({ status: 'ok', timestamp: new Date() });
   });
 
   return router;

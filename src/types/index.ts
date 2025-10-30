@@ -46,6 +46,7 @@ export interface BatchSyncRequest {
 }
 
 export interface BatchSyncResponse {
+  results: any;
   processed_items: {
     client_id: string;
     server_id: string;
